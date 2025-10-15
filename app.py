@@ -72,7 +72,7 @@ Additional data/files:
 
 Return ONLY the HTML code, no explanations."""
 
-    model = genai.GenerativeModel('gemini-pro')
+    model = genai.GenerativeModel('gemini-1.5-flash')
     response = model.generate_content(prompt)
     
     code = response.text.strip()
