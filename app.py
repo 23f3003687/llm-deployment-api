@@ -9,8 +9,9 @@ import google.generativeai as genai
 from github import Github, Auth
 
 
-# Load environment variables
-load_dotenv()
+# Load environment variables (only for local development)
+if os.path.exists('.env'):
+    load_dotenv()
 
 app = Flask(__name__)
 
