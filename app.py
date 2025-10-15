@@ -6,12 +6,11 @@ import time
 import requests
 from dotenv import load_dotenv
 import google.generativeai as genai
-from github import Github, Auth
+from github import Github
+import base64
 
-
-# Load environment variables (only for local development)
-if os.path.exists('.env'):
-    load_dotenv()
+# Load environment variables
+load_dotenv()
 
 app = Flask(__name__)
 
@@ -23,9 +22,7 @@ GITHUB_USERNAME = os.getenv('GITHUB_USERNAME')
 
 # Initialize APIs
 genai.configure(api_key=GEMINI_API_KEY)
-
-auth = Auth.Token(GITHUB_TOKEN)
-github_client = Github(auth=auth)
+github_client = Github(GITHUB_TOKEN)
 
 def verify_secret(request_data):
     """Verify the secret from the request"""
@@ -230,17 +227,9 @@ def send_to_evaluation(evaluation_url, data, max_retries=5):
     
     return False
 
-@app.route('/api/deploy', methods=['POST'])
-def deploy():
-    """Main endpoint to receive tasks and deploy apps"""
+def process_deployment(data):
+    """Background task to process deployment"""
     try:
-        data = request.json
-        
-        # Verify secret
-        if not verify_secret(data):
-            return jsonify({'error': 'Invalid secret'}), 401
-        
-        # Extract data
         email = data.get('email')
         task = data.get('task')
         round_num = data.get('round')
@@ -250,7 +239,7 @@ def deploy():
         attachments = data.get('attachments', [])
         evaluation_url = data.get('evaluation_url')
         
-        print(f"Received task: {task}, round: {round_num}")
+        print(f"Processing task: {task}, round: {round_num}")
         
         # Generate code using LLM
         print("Generating code with LLM...")
@@ -278,12 +267,33 @@ def deploy():
         # Send to evaluation URL
         print("Sending to evaluation URL...")
         send_to_evaluation(evaluation_url, eval_data)
+        print(f"Task {task} completed successfully!")
         
+    except Exception as e:
+        print(f"Error processing deployment: {e}")
+
+@app.route('/api/deploy', methods=['POST'])
+def deploy():
+    """Main endpoint to receive tasks and deploy apps"""
+    try:
+        data = request.json
+        
+        # Verify secret
+        if not verify_secret(data):
+            return jsonify({'error': 'Invalid secret'}), 401
+        
+        print(f"Received task: {data.get('task')}, round: {data.get('round')}")
+        
+        # Start background processing
+        import threading
+        thread = threading.Thread(target=process_deployment, args=(data,))
+        thread.daemon = True
+        thread.start()
+        
+        # Return immediately
         return jsonify({
             'status': 'success',
-            'message': 'App deployed successfully',
-            'repo_url': repo_info['repo_url'],
-            'pages_url': repo_info['pages_url']
+            'message': 'Deployment started'
         }), 200
         
     except Exception as e:
