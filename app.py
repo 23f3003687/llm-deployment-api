@@ -6,11 +6,12 @@ import time
 import requests
 from dotenv import load_dotenv
 import google.generativeai as genai
-from github import Github
-import base64
+from github import Github, Auth
+import threading
 
-# Load environment variables
-load_dotenv()
+# Load environment variables (only for local development)
+if os.path.exists('.env'):
+    load_dotenv()
 
 app = Flask(__name__)
 
@@ -20,129 +21,79 @@ GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
 SECRET = os.getenv('SECRET')
 GITHUB_USERNAME = os.getenv('GITHUB_USERNAME')
 
-# Initialize APIs
+# Initialize clients
 genai.configure(api_key=GEMINI_API_KEY)
-github_client = Github(GITHUB_TOKEN)
+auth = Auth.Token(GITHUB_TOKEN)
+github_client = Github(auth=auth)
 
-def verify_secret(request_data):
-    """Verify the secret from the request"""
-    return request_data.get('secret') == SECRET
+# Track processed tasks to prevent duplicates
+processed_tasks = {}
+
+def verify_secret(provided_secret):
+    """Verify the secret matches"""
+    return provided_secret == SECRET
 
 def generate_code_with_llm(brief, checks, attachments):
-    """Use Gemini to generate HTML/JS code based on brief"""
+    """Generate HTML/JS code using Gemini"""
+    print("Generating code with LLM...")
     
-    # Prepare prompt for LLM
-    prompt = f"""You are an expert web developer. Create a single-page HTML application based on this brief:
+    prompt = f"""Create a complete, working HTML file for this task:
 
-BRIEF: {brief}
+Task: {brief}
 
-REQUIREMENTS (These will be tested):
+Requirements:
 {chr(10).join(f"- {check}" for check in checks)}
 
-ATTACHMENTS:
-{json.dumps(attachments, indent=2)}
+Rules:
+1. Create a SINGLE HTML file with embedded CSS and JavaScript
+2. Use CDN links for any libraries (Bootstrap, etc.)
+3. Make it functional and complete
+4. Include proper error handling
+5. Style it nicely with Bootstrap 5
+6. Add responsive design
 
-Generate a complete, working HTML file that:
-1. Includes all necessary CSS (inline or in <style> tags)
-2. Includes all necessary JavaScript (inline or in <script> tags)
-3. Uses CDN links for any external libraries (from cdnjs.cloudflare.com only)
-4. Handles the attachments properly (they're provided as data URIs)
-5. Is production-ready and fully functional
-6. Meets ALL the requirements listed above
+Additional data/files:
+{json.dumps(attachments) if attachments else "None"}
 
-Return ONLY the complete HTML code, no explanations, no markdown formatting, just the raw HTML."""
+Return ONLY the HTML code, no explanations."""
 
-    try:
-        model = genai.GenerativeModel('gemini-pro')
-        response = model.generate_content(prompt)
-        code = response.text
-        
-        # Remove markdown code blocks if present
-        if '```html' in code:
-            code = code.split('```html')[1].split('```')[0].strip()
-        elif '```' in code:
-            code = code.split('```')[1].split('```')[0].strip()
-        
-        return code
-    except Exception as e:
-        print(f"Error generating code: {e}")
-        # Return a basic template if LLM fails
-        return f"""<!DOCTYPE html>
-<html>
-<head>
-    <title>Generated App</title>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
-</head>
-<body>
-    <div class="container mt-5">
-        <h1>Application</h1>
-        <p>{brief}</p>
-    </div>
-</body>
-</html>"""
+    model = genai.GenerativeModel('gemini-pro')
+    response = model.generate_content(prompt)
+    
+    code = response.text.strip()
+    
+    # Clean up markdown code blocks if present
+    if code.startswith('```html'):
+        code = code.split('```html')[1].split('```')[0].strip()
+    elif code.startswith('```'):
+        code = code.split('```')[1].split('```')[0].strip()
+    
+    return code
 
-def generate_readme(brief, task_id, repo_name):
-    """Generate a professional README.md"""
-    return f"""# {repo_name}
-
-## Summary
-This application was automatically generated to fulfill the following requirement:
-
-{brief}
-
-## Setup
-1. Clone this repository
-2. Open `index.html` in a web browser or deploy to any static hosting service
-
-## Usage
-Simply open the deployed GitHub Pages URL or run locally by opening `index.html`.
-
-## Code Explanation
-This is a single-page web application that:
-- Uses modern HTML5, CSS3, and JavaScript
-- Implements the required functionality as specified
-- Uses CDN-hosted libraries for dependencies
-- Is fully self-contained and ready for deployment
-
-## Technologies Used
-- HTML5
-- CSS3 (Bootstrap 5 for styling)
-- Vanilla JavaScript
-- External libraries loaded from CDN
-
-## License
-MIT License - See LICENSE file for details
-
-## Task Information
-- Task ID: {task_id}
-- Generated: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}
-"""
-
-def create_github_repo(task_id, html_code, brief):
+def create_github_repo(repo_name, html_code, brief):
     """Create GitHub repository and push code"""
+    print(f"Creating GitHub repository: {repo_name}")
+    
     try:
         user = github_client.get_user()
         
-        # Create unique repo name
-        repo_name = f"{task_id}"
+        # Check if repo already exists
+        try:
+            existing_repo = user.get_repo(repo_name)
+            print(f"Repository {repo_name} already exists, using existing one")
+            repo = existing_repo
+        except:
+            # Create new repository
+            repo = user.create_repo(
+                name=repo_name,
+                description=f"Auto-generated app: {brief}",
+                private=False,
+                auto_init=False
+            )
+            print(f"Repository created: {repo.html_url}")
         
-        # Create repository
-        repo = user.create_repo(
-            repo_name,
-            description=f"Auto-generated app: {brief[:100]}",
-            private=False,
-            auto_init=False
-        )
-        
-        # Create and push index.html
-        repo.create_file(
-            "index.html",
-            "Initial commit: Add index.html",
-            html_code
-        )
-        
-        # Create and push LICENSE
-        mit_license = """MIT License
+        # Create LICENSE file
+        license_content = """MIT License
 
 Copyright (c) 2024
 
@@ -164,136 +115,198 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE."""
         
-        repo.create_file(
-            "LICENSE",
-            "Add MIT LICENSE",
-            mit_license
-        )
+        # Create README
+        readme_content = f"""# {repo_name}
+
+## Description
+{brief}
+
+## Features
+Auto-generated application using LLM-assisted deployment system.
+
+## Usage
+Visit the live site: https://{GITHUB_USERNAME}.github.io/{repo_name}/
+
+## License
+MIT License - see LICENSE file for details.
+
+## Auto-generated
+This repository was automatically generated and deployed.
+"""
         
-        # Create and push README.md
-        readme_content = generate_readme(brief, task_id, repo_name)
-        repo.create_file(
-            "README.md",
-            "Add README",
-            readme_content
-        )
+        # Push files to repo
+        try:
+            # Try to get existing files first
+            try:
+                repo.get_contents("index.html")
+                # Update existing files
+                repo.update_file("index.html", "Update app", html_code, repo.get_contents("index.html").sha)
+                repo.update_file("README.md", "Update README", readme_content, repo.get_contents("README.md").sha)
+                repo.update_file("LICENSE", "Update LICENSE", license_content, repo.get_contents("LICENSE").sha)
+            except:
+                # Create new files
+                repo.create_file("index.html", "Initial commit: Add app", html_code)
+                repo.create_file("README.md", "Initial commit: Add README", readme_content)
+                repo.create_file("LICENSE", "Initial commit: Add LICENSE", license_content)
+            
+            print("Files pushed successfully")
+        except Exception as e:
+            print(f"Error pushing files: {e}")
         
         # Enable GitHub Pages
         try:
-            repo.create_pages_site(branch="main")
-        except:
-            # Pages might already be enabled or need time
-            pass
+            repo.create_pages_site(source={"branch": "main", "path": "/"})
+            print("GitHub Pages enabled")
+        except Exception as e:
+            # Pages might already be enabled
+            print(f"Pages setup: {e}")
         
-        # Get URLs
-        repo_url = repo.html_url
-        commit_sha = repo.get_commits()[0].sha
-        pages_url = f"https://{GITHUB_USERNAME}.github.io/{repo_name}/"
+        # Wait a bit for Pages to deploy
+        time.sleep(10)
         
         return {
-            'repo_url': repo_url,
-            'commit_sha': commit_sha,
-            'pages_url': pages_url
+            'repo_url': repo.html_url,
+            'pages_url': f"https://{GITHUB_USERNAME}.github.io/{repo_name}/",
+            'commit_sha': repo.get_commits()[0].sha
         }
         
     except Exception as e:
-        print(f"Error creating repo: {e}")
-        raise
+        print(f"Error creating repository: {e}")
+        raise Exception(f"Repository creation failed: {str(e)}")
 
-def send_to_evaluation(evaluation_url, data, max_retries=5):
-    """Send data to evaluation URL with exponential backoff"""
-    for attempt in range(max_retries):
+def submit_to_evaluation(evaluation_url, task_id, nonce, repo_data):
+    """Submit results to evaluation API with retry logic"""
+    print(f"Submitting to evaluation URL: {evaluation_url}")
+    
+    payload = {
+        'task': task_id,
+        'nonce': nonce,
+        'repo_url': repo_data['repo_url'],
+        'pages_url': repo_data['pages_url'],
+        'commit_sha': repo_data['commit_sha']
+    }
+    
+    # Retry logic with exponential backoff
+    for attempt in range(4):
         try:
-            response = requests.post(
-                evaluation_url,
-                json=data,
-                headers={'Content-Type': 'application/json'},
-                timeout=30
-            )
+            wait_time = 2 ** attempt  # 1, 2, 4, 8 seconds
+            if attempt > 0:
+                print(f"Retry attempt {attempt + 1} after {wait_time}s")
+                time.sleep(wait_time)
+            
+            response = requests.post(evaluation_url, json=payload, timeout=30)
             
             if response.status_code == 200:
-                print(f"Successfully sent to evaluation URL")
+                print("Successfully submitted to evaluation API")
                 return True
             else:
-                print(f"Evaluation URL returned status {response.status_code}")
+                print(f"Evaluation API returned {response.status_code}: {response.text}")
                 
         except Exception as e:
-            print(f"Attempt {attempt + 1} failed: {e}")
-        
-        if attempt < max_retries - 1:
-            wait_time = 2 ** attempt  # 1, 2, 4, 8 seconds
-            print(f"Retrying in {wait_time} seconds...")
-            time.sleep(wait_time)
+            print(f"Error submitting to evaluation API: {e}")
+            if attempt == 3:  # Last attempt
+                return False
     
     return False
 
-def process_deployment(data):
-    """Background task to process deployment"""
+def process_task_background(task_data):
+    """Process the task in background thread"""
     try:
+        task_id = task_data['task']
+        brief = task_data['brief']
+        checks = task_data['checks']
+        attachments = task_data.get('attachments', [])
+        evaluation_url = task_data['evaluation_url']
+        nonce = task_data['nonce']
+        
+        print(f"Background processing started for task: {task_id}")
+        
+        # Generate code
+        html_code = generate_code_with_llm(brief, checks, attachments)
+        
+        # Create GitHub repo and deploy
+        repo_data = create_github_repo(task_id, html_code, brief)
+        
+        # Submit to evaluation
+        submit_to_evaluation(evaluation_url, task_id, nonce, repo_data)
+        
+        # Mark as processed
+        processed_tasks[task_id] = {
+            'status': 'completed',
+            'repo_url': repo_data['repo_url'],
+            'pages_url': repo_data['pages_url']
+        }
+        
+        print(f"Task {task_id} completed successfully!")
+        
+    except Exception as e:
+        print(f"Error processing task {task_id}: {e}")
+        processed_tasks[task_id] = {
+            'status': 'failed',
+            'error': str(e)
+        }
+
+@app.route('/api/deploy', methods=['POST'])
+def deploy():
+    """Main endpoint to receive deployment requests"""
+    try:
+        data = request.get_json()
+        
+        # Extract required fields
         email = data.get('email')
-        task = data.get('task')
-        round_num = data.get('round')
+        secret = data.get('secret')
+        task_id = data.get('task')
+        round_num = data.get('round', 1)
         nonce = data.get('nonce')
         brief = data.get('brief')
         checks = data.get('checks', [])
         attachments = data.get('attachments', [])
         evaluation_url = data.get('evaluation_url')
         
-        print(f"Processing task: {task}, round: {round_num}")
-        
-        # Generate code using LLM
-        print("Generating code with LLM...")
-        html_code = generate_code_with_llm(brief, checks, attachments)
-        
-        # Create GitHub repo and deploy
-        print("Creating GitHub repository...")
-        repo_info = create_github_repo(task, html_code, brief)
-        
-        # Wait a bit for Pages to deploy
-        print("Waiting for GitHub Pages to deploy...")
-        time.sleep(5)
-        
-        # Prepare evaluation response
-        eval_data = {
-            'email': email,
-            'task': task,
-            'round': round_num,
-            'nonce': nonce,
-            'repo_url': repo_info['repo_url'],
-            'commit_sha': repo_info['commit_sha'],
-            'pages_url': repo_info['pages_url']
-        }
-        
-        # Send to evaluation URL
-        print("Sending to evaluation URL...")
-        send_to_evaluation(evaluation_url, eval_data)
-        print(f"Task {task} completed successfully!")
-        
-    except Exception as e:
-        print(f"Error processing deployment: {e}")
-
-@app.route('/api/deploy', methods=['POST'])
-def deploy():
-    """Main endpoint to receive tasks and deploy apps"""
-    try:
-        data = request.json
+        print(f"\n{'='*60}")
+        print(f"Received request for task: {task_id} (Round {round_num})")
+        print(f"Brief: {brief}")
+        print(f"{'='*60}\n")
         
         # Verify secret
-        if not verify_secret(data):
+        if not verify_secret(secret):
+            print("Secret verification failed!")
             return jsonify({'error': 'Invalid secret'}), 401
         
-        print(f"Received task: {data.get('task')}, round: {data.get('round')}")
+        print("Secret verified ✓")
+        
+        # Check if already processing/processed
+        if task_id in processed_tasks:
+            status = processed_tasks[task_id]
+            if status['status'] == 'completed':
+                return jsonify({
+                    'status': 'success',
+                    'message': 'Task already completed',
+                    'repo_url': status['repo_url'],
+                    'pages_url': status['pages_url']
+                }), 200
+            elif status['status'] == 'processing':
+                return jsonify({
+                    'status': 'processing',
+                    'message': 'Task is being processed'
+                }), 200
+        
+        # Mark as processing
+        processed_tasks[task_id] = {'status': 'processing'}
         
         # Start background processing
-        import threading
-        thread = threading.Thread(target=process_deployment, args=(data,))
+        thread = threading.Thread(
+            target=process_task_background,
+            args=(data,)
+        )
         thread.daemon = True
         thread.start()
         
-        # Return immediately
+        # Return immediate success response
         return jsonify({
             'status': 'success',
-            'message': 'Deployment started'
+            'message': 'Task accepted and is being processed',
+            'task': task_id
         }), 200
         
     except Exception as e:
@@ -305,5 +318,15 @@ def health():
     """Health check endpoint"""
     return jsonify({'status': 'healthy'}), 200
 
+@app.route('/', methods=['GET'])
+def home():
+    """Root endpoint"""
+    return jsonify({
+        'service': 'LLM Code Deployment API',
+        'status': 'running',
+        'endpoint': '/api/deploy'
+    }), 200
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    port = int(os.getenv('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=True)
