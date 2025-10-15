@@ -21,10 +21,25 @@ GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
 SECRET = os.getenv('SECRET')
 GITHUB_USERNAME = os.getenv('GITHUB_USERNAME')
 
-# Initialize clients
-genai.configure(api_key=GEMINI_API_KEY)
-auth = Auth.Token(GITHUB_TOKEN)
-github_client = Github(auth=auth)
+# Debug: Print environment variable status (without exposing values)
+print("="*60)
+print("Environment Variables Check:")
+print(f"GEMINI_API_KEY: {'SET' if GEMINI_API_KEY else 'MISSING'}")
+print(f"GITHUB_TOKEN: {'SET' if GITHUB_TOKEN else 'MISSING'}")
+print(f"SECRET: {'SET' if SECRET else 'MISSING'}")
+print(f"GITHUB_USERNAME: {'SET' if GITHUB_USERNAME else 'MISSING'}")
+print("="*60)
+
+# Initialize clients only if variables exist
+if not all([GEMINI_API_KEY, GITHUB_TOKEN, SECRET, GITHUB_USERNAME]):
+    print("ERROR: Missing required environment variables!")
+    print("App will start but deployments will fail.")
+    github_client = None
+else:
+    genai.configure(api_key=GEMINI_API_KEY)
+    auth = Auth.Token(GITHUB_TOKEN)
+    github_client = Github(auth=auth)
+    print("✓ All clients initialized successfully")
 
 # Track processed tasks to prevent duplicates
 processed_tasks = {}
