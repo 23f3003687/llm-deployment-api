@@ -262,7 +262,7 @@ def deploy():
         
         # Wait a bit for Pages to deploy
         print("Waiting for GitHub Pages to deploy...")
-        time.sleep(30)
+        time.sleep(5)
         
         # Prepare evaluation response
         eval_data = {
