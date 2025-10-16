@@ -89,6 +89,9 @@ def create_github_repo(repo_name, html_code, brief):
     """Create GitHub repository and push code"""
     print(f"Creating GitHub repository: {repo_name}")
     
+    if github_client is None:
+        raise Exception("GitHub client not initialized - check environment variables")
+    
     try:
         user = github_client.get_user()
         
@@ -168,13 +171,32 @@ This repository was automatically generated and deployed.
         except Exception as e:
             print(f"Error pushing files: {e}")
         
-        # Enable GitHub Pages
+        # Enable GitHub Pages using REST API
         try:
-            repo.create_pages_site(source={"branch": "main", "path": "/"})
-            print("GitHub Pages enabled")
+            pages_api_url = f"https://api.github.com/repos/{GITHUB_USERNAME}/{repo_name}/pages"
+            headers = {
+                "Authorization": f"Bearer {GITHUB_TOKEN}",
+                "Accept": "application/vnd.github.v3+json",
+                "X-GitHub-Api-Version": "2022-11-28"
+            }
+            pages_payload = {
+                "source": {
+                    "branch": "main",
+                    "path": "/"
+                }
+            }
+            
+            pages_response = requests.post(pages_api_url, json=pages_payload, headers=headers)
+            
+            if pages_response.status_code == 201:
+                print("✓ GitHub Pages enabled successfully")
+            elif pages_response.status_code == 409:
+                print("✓ GitHub Pages already enabled")
+            else:
+                print(f"Pages response: {pages_response.status_code} - {pages_response.text}")
+                
         except Exception as e:
-            # Pages might already be enabled
-            print(f"Pages setup: {e}")
+            print(f"Pages setup error: {e}")
         
         # Wait a bit for Pages to deploy
         time.sleep(10)
