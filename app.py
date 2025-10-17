@@ -211,16 +211,18 @@ This repository was automatically generated and deployed.
         print(f"Error creating repository: {e}")
         raise Exception(f"Repository creation failed: {str(e)}")
 
-def submit_to_evaluation(evaluation_url, task_id, nonce, repo_data):
+def submit_to_evaluation(evaluation_url, email, task_id, round_num, nonce, repo_data):
     """Submit results to evaluation API with retry logic"""
     print(f"Submitting to evaluation URL: {evaluation_url}")
     
     payload = {
+        'email': email,
         'task': task_id,
+        'round': round_num,
         'nonce': nonce,
         'repo_url': repo_data['repo_url'],
-        'pages_url': repo_data['pages_url'],
-        'commit_sha': repo_data['commit_sha']
+        'commit_sha': repo_data['commit_sha'],
+        'pages_url': repo_data['pages_url']
     }
     
     # Retry logic with exponential backoff
@@ -249,7 +251,9 @@ def submit_to_evaluation(evaluation_url, task_id, nonce, repo_data):
 def process_task_background(task_data):
     """Process the task in background thread"""
     try:
+        email = task_data['email']
         task_id = task_data['task']
+        round_num = task_data.get('round', 1)
         brief = task_data['brief']
         checks = task_data['checks']
         attachments = task_data.get('attachments', [])
@@ -265,7 +269,7 @@ def process_task_background(task_data):
         repo_data = create_github_repo(task_id, html_code, brief)
         
         # Submit to evaluation
-        submit_to_evaluation(evaluation_url, task_id, nonce, repo_data)
+        submit_to_evaluation(evaluation_url, email, task_id, round_num, nonce, repo_data)
         
         # Mark as processed
         processed_tasks[task_id] = {
